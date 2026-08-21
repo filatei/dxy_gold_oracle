@@ -27,35 +27,49 @@ Three times per trading day the Oracle:
 
 ---
 
-## Repository secrets
+## GitHub Secrets (for forks)
 
-In GitHub: **Settings → Secrets and variables → Actions**
+Forks do **not** inherit secrets. After forking, add these under  
+**Settings → Secrets and variables → Actions → New repository secret**.
 
-| Secret | Required | How to get it |
-|--------|----------|----------------|
-| `TELEGRAM_BOT_TOKEN` | For alerts | [@BotFather](https://t.me/botfather) |
-| `TELEGRAM_CHAT_ID` | For alerts | [@userinfobot](https://t.me/userinfobot); groups: `getUpdates` after adding the bot. Multiple IDs: `123,-100456` |
-| `GROQ_API_KEY` | Recommended | [console.groq.com](https://console.groq.com/keys) |
-| `GEMINI_API_KEY` | Fallback | [Google AI Studio](https://aistudio.google.com/app/apikey) |
-| `OPENROUTER_API_KEY` | Fallback | [openrouter.ai](https://openrouter.ai/keys) |
+Exact names must match (code reads `GEMINI_API_KEY` and `OPENROUTER_API_KEY` — not `GOOGLE_*` / `OR_*`).
 
-`GITHUB_TOKEN` is injected automatically by Actions. Do **not** put API keys in the repo — use `.env` locally (see `.env.example`).
+| Secret name | Required? | Where to get it | Workflows that need it |
+|-------------|-----------|-----------------|------------------------|
+| `TELEGRAM_BOT_TOKEN` | Optional (needed for Telegram alerts / feedback) | [@BotFather](https://t.me/botfather) | `london-session`, `ny-session`, `asia-session`, `telegram-feedback`, `test-telegram` |
+| `TELEGRAM_CHAT_ID` | Optional (with bot token) | [@userinfobot](https://t.me/userinfobot); groups: `getUpdates` after adding the bot. Multiple IDs: `123,-100456` | `london-session`, `ny-session`, `asia-session`, `test-telegram` |
+| `GROQ_API_KEY` | Optional (recommended; first LLM in cascade) | [console.groq.com/keys](https://console.groq.com/keys) | `london-session`, `ny-session`, `asia-session` |
+| `GEMINI_API_KEY` | Optional (LLM fallback #2) | [Google AI Studio](https://aistudio.google.com/app/apikey) | `london-session`, `ny-session`, `asia-session` |
+| `OPENROUTER_API_KEY` | Optional (LLM fallback #3) | [openrouter.ai/keys](https://openrouter.ai/keys) | `london-session`, `ny-session`, `asia-session` |
 
-Optional model overrides (repo Variables or env): `GROQ_MODEL`, `GEMINI_MODEL`, `OPENROUTER_MODEL`.
+**Not a user secret:** `GITHUB_TOKEN` is injected automatically by Actions (mapped to `GH_TOKEN` in workflows). It powers Issue creation, feedback comments, and weekly accuracy. `ci.yml` needs no secrets.
+
+**Minimal fork setup**
+
+| Goal | Secrets to add |
+|------|----------------|
+| Session runs + GitHub Issues only | none (Issues work via `GITHUB_TOKEN`); macro stays neutral without LLM keys |
+| Session runs + LLM macro | at least one of `GROQ_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` |
+| Telegram alerts + Accurate/Wrong buttons | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` |
+| Poll button feedback into Issues | `TELEGRAM_BOT_TOKEN` (plus Issues permission via `GITHUB_TOKEN`) |
+
+Optional **Variables** (or env), not secrets: `GROQ_MODEL`, `GEMINI_MODEL`, `OPENROUTER_MODEL`.  
+Local-only (see `.env.example`): `GH_TOKEN`, `GITHUB_REPOSITORY`, `ORACLE_DRY_RUN`.
+
+Do **not** commit API keys — use repository Secrets for Actions and `.env` locally.
 
 ---
 
 ## GitHub Actions setup
 
-1. Push this repo (or use the published `filatei/dxy_gold_oracle`).
-2. Add the secrets above.
-3. Open **Actions** and enable workflows if prompted.
-4. Run **Test Telegram Integration** (manual) to verify the bot.
-5. Run **London Session Oracle** (manual) once, then confirm:
+1. Fork or clone (`filatei/dxy_gold_oracle`), then add the secrets above in **your** repo.
+2. Open **Actions** and enable workflows if prompted.
+3. Run **Test Telegram Integration** (manual) if you configured Telegram.
+4. Run **London Session Oracle** (manual) once, then confirm:
    - a new Issue (label `oracle-signal` if labels exist)
-   - a Telegram message with feedback buttons
+   - a Telegram message with feedback buttons (if Telegram secrets are set)
 
-Scheduled runs only fire after Actions are enabled and secrets are present. Forks must re-add secrets.
+Scheduled runs only fire after Actions are enabled.
 
 ### Workflows
 
