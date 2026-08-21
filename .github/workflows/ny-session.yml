@@ -5,16 +5,20 @@ on:
     - cron: '30 13 * * 1-5'  # 13:30 UTC, Mon-Fri (8:30 AM EST, before 9:30 NY open)
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   oracle:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      issues: write
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5

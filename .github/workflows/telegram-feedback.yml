@@ -6,13 +6,14 @@ on:
     - cron: '*/20 6-23 * * 1-5'
   workflow_dispatch:
 
+permissions:
+  contents: write
+  issues: write
+
 jobs:
   collect:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      issues: write
-      contents: write
 
     steps:
       - name: Checkout repo

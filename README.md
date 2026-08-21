@@ -30,7 +30,7 @@ Three times per trading day the Oracle:
 ## GitHub Secrets (for forks)
 
 Forks do **not** inherit secrets. After forking, add these under  
-**Settings → Secrets and variables → Actions → New repository secret**.
+**Settings → Secrets and variables → Actions → New repository secret** on **the fork** (not the upstream repo). Also enable **Actions** on the fork if prompted.
 
 Exact names must match (code reads `GEMINI_API_KEY` and `OPENROUTER_API_KEY` — not `GOOGLE_*` / `OR_*`).
 
@@ -42,7 +42,22 @@ Exact names must match (code reads `GEMINI_API_KEY` and `OPENROUTER_API_KEY` —
 | `GEMINI_API_KEY` | Optional (LLM fallback #2) | [Google AI Studio](https://aistudio.google.com/app/apikey) | `london-session`, `ny-session`, `asia-session` |
 | `OPENROUTER_API_KEY` | Optional (LLM fallback #3) | [openrouter.ai/keys](https://openrouter.ai/keys) | `london-session`, `ny-session`, `asia-session` |
 
-**Not a user secret:** `GITHUB_TOKEN` is injected automatically by Actions (mapped to `GH_TOKEN` in workflows). It powers Issue creation, feedback comments, and weekly accuracy. `ci.yml` needs no secrets.
+**Not a user secret:** `GITHUB_TOKEN` is injected automatically by Actions (mapped to `GH_TOKEN` in workflows). It powers checkout (private repos), Issue creation, feedback comments, and weekly accuracy. `ci.yml` needs no user secrets.
+
+### Private repo + Actions permissions
+
+This repository is **private**. Workflows declare:
+
+```yaml
+permissions:
+  contents: read   # required for actions/checkout on private repos
+  issues: write    # session / weekly workflows that open Issues
+```
+
+If you set a `permissions:` block, any omitted scope defaults to **none**. Granting only `issues: write` (without `contents: read`) makes checkout fail with `remote: Repository not found` — GitHub hides private repos from tokens that lack Contents access.
+
+`telegram-feedback.yml` uses `contents: write` so it can commit the Telegram offset file.
+
 
 **Minimal fork setup**
 
@@ -70,6 +85,14 @@ Do **not** commit API keys — use repository Secrets for Actions and `.env` loc
    - a Telegram message with feedback buttons (if Telegram secrets are set)
 
 Scheduled runs only fire after Actions are enabled.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| Checkout: `remote: Repository not found` / `fatal: repository '…' not found` | Private repo + workflow `permissions` missing `contents: read` (token cannot see the repo). Also happens if Actions are disabled or secrets live on upstream while the run is on a fork. | Add `contents: read` (and `issues: write` where Issues are created). Enable Actions on **the fork**. Set secrets on **the fork**. Never hardcode another repo URL in `actions/checkout` — use the default `${{ github.repository }}`. |
+| Issues not created | Missing `issues: write` or Actions disabled | Add permission; confirm workflow ran |
+| Telegram skipped / no alerts | Missing `TELEGRAM_*` secrets on this repo | Add secrets on the repo that runs the workflow |
 
 ### Workflows
 
