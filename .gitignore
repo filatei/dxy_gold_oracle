@@ -1,0 +1,39 @@
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
+env/
+venv/
+.venv/
+ENV/
+
+# Runtime artifacts
+*.log
+.ipynb_checkpoints/
+.DS_Store
+report_*.json
+data/*
+!data/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp

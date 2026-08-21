@@ -1,0 +1,58 @@
+name: Collect Telegram Feedback
+
+on:
+  schedule:
+    # Every 20 minutes during market hours (06:00-23:00 UTC, Mon-Fri)
+    - cron: '*/20 6-23 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Collect Feedback
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python -m src.main --collect-feedback
+
+      - name: Commit Offset State
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f data/telegram_offset.json ]; then
+            git add data/telegram_offset.json
+            if git diff --cached --quiet; then
+              echo "Offset unchanged"
+            else
+              git commit -m "chore: update telegram feedback offset [skip ci]"
+              git push
+            fi
+          else
+            echo "No offset file written"
+          fi
