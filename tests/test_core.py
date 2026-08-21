@@ -127,11 +127,13 @@ def test_macro_analyst_normalizes_with_mock_llm():
 def test_llm_router_neutral_without_keys(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     router = FreeLLMRouter()
     result = router.query("test")
     assert result["sentiment"] == "neutral"
     assert result["score"] == 0
+    assert router.available_providers() == []
 
 
 def test_llm_safe_json_parse_fenced():
@@ -140,6 +142,73 @@ def test_llm_safe_json_parse_fenced():
     assert parsed["sentiment"] == "bearish"
     assert parsed["score"] == -2
     assert "key_factors" in parsed
+
+
+def test_deepseek_query_mocked(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    router = FreeLLMRouter()
+    fake = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "sentiment": "bullish",
+                            "score": 2,
+                            "key_factors": ["yields"],
+                            "session_context": "risk-on",
+                        }
+                    )
+                }
+            }
+        ]
+    }
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = fake
+    with patch("src.llm.router.requests.post", return_value=mock_resp) as post:
+        result = router.query("test prompt")
+    assert result["sentiment"] == "bullish"
+    assert result["score"] == 2
+    assert post.call_args.args[0] == "https://api.deepseek.com/chat/completions"
+    assert "Bearer sk-test" in post.call_args.kwargs["headers"]["Authorization"]
+    assert post.call_args.kwargs["json"]["model"] == "deepseek-v4-flash"
+
+
+def test_query_all_deepseek_direct_skips_openrouter_deepseek(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or")
+    router = FreeLLMRouter()
+    assert "deepseek" in router.available_providers()
+    assert "openrouter_deepseek" not in router.available_providers()
+    with patch.object(router, "_deepseek", return_value={"gold_action": "BUY"}):
+        with patch.object(router, "_openrouter", return_value={"gold_action": "HOLD"}):
+            with patch.object(router, "_openrouter_deepseek") as ods:
+                results = router.query_all("p", "s")
+    providers = [r["provider"] for r in results]
+    assert providers == ["deepseek", "openrouter"]
+    ods.assert_not_called()
+
+
+def test_query_all_openrouter_deepseek_when_no_direct_key(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or")
+    router = FreeLLMRouter()
+    assert router.available_providers() == ["openrouter", "openrouter_deepseek"]
+    with patch.object(router, "_openrouter", return_value={"gold_action": "HOLD"}):
+        with patch.object(
+            router, "_openrouter_deepseek", return_value={"gold_action": "BUY"}
+        ) as ods:
+            results = router.query_all("p", "s")
+    assert [r["provider"] for r in results] == ["openrouter", "openrouter_deepseek"]
+    ods.assert_called_once()
 
 
 def test_oracle_aggregate_thresholds():
@@ -296,6 +365,7 @@ def test_aggregate_opinion_no_llms_uses_agent():
 def test_oracle_form_opinion_agent_fallback(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     oracle = GoldOracle("london")
     opinion = oracle._form_opinion(
@@ -354,16 +424,21 @@ def test_oracle_form_opinion_majority_from_mocked_llms():
 def test_query_all_only_configured(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "x")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     router = FreeLLMRouter()
     with patch.object(router, "_groq", return_value={"gold_action": "HOLD"}):
         with patch.object(router, "_gemini") as gem:
-            with patch.object(router, "_openrouter") as opr:
-                results = router.query_all("p", "s")
+            with patch.object(router, "_deepseek") as ds:
+                with patch.object(router, "_openrouter") as opr:
+                    with patch.object(router, "_openrouter_deepseek") as ods:
+                        results = router.query_all("p", "s")
     assert len(results) == 1
     assert results[0]["provider"] == "groq"
     gem.assert_not_called()
+    ds.assert_not_called()
     opr.assert_not_called()
+    ods.assert_not_called()
 
 
 def _sample_report(**opinion_overrides):

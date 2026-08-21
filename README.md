@@ -14,7 +14,7 @@ Three times per trading day the Oracle:
 2. Synthesizes a geometric DXY proxy from basket weights
 3. Runs technicals (EMA/RSI), DXY–gold correlation, and macro sentiment via free LLMs
 4. Aggregates a direction + confidence score
-5. Asks every configured LLM (Groq, Gemini, OpenRouter) to vote **BUY / SELL / HOLD** on GOLD and DXY; majority wins (one key is enough; agent consensus if none)
+5. Asks every configured LLM (Groq, Gemini, DeepSeek, OpenRouter) to vote **BUY / SELL / HOLD** on GOLD and DXY; majority wins (one key is enough; agent consensus if none)
 6. Opens a GitHub Issue (audit trail) and optionally alerts Telegram — opinion block at the top, plus Accurate/Wrong buttons
 7. Collects Telegram feedback into issue comments for weekly accuracy reporting
 
@@ -33,7 +33,9 @@ Three times per trading day the Oracle:
 Forks do **not** inherit secrets. After forking, add these under  
 **Settings → Secrets and variables → Actions → New repository secret** on **the fork** (not the upstream repo). Also enable **Actions** on the fork if prompted.
 
-Exact names must match (code reads `GEMINI_API_KEY` and `OPENROUTER_API_KEY` — not `GOOGLE_*` / `OR_*`).
+Exact names must match (code reads `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, and `OPENROUTER_API_KEY` — not `GOOGLE_*` / `OR_*`).
+
+**Free / cheap ≠ no API key.** DeepSeek (and the others) still require you to register and set a secret; “free tier” means low or no cost after you have a key, not that auth is optional.
 
 | Secret name | Required? | Where to get it | Workflows that need it |
 |-------------|-----------|-----------------|------------------------|
@@ -41,7 +43,8 @@ Exact names must match (code reads `GEMINI_API_KEY` and `OPENROUTER_API_KEY` —
 | `TELEGRAM_CHAT_ID` | Optional (with bot token) | [@userinfobot](https://t.me/userinfobot); groups: `getUpdates` after adding the bot. Multiple IDs: `123,-100456` | `london-session`, `ny-session`, `asia-session`, `test-telegram` |
 | `GROQ_API_KEY` | Optional (recommended; first LLM in cascade) | [console.groq.com/keys](https://console.groq.com/keys) | `london-session`, `ny-session`, `asia-session` |
 | `GEMINI_API_KEY` | Optional (LLM fallback #2) | [Google AI Studio](https://aistudio.google.com/app/apikey) | `london-session`, `ny-session`, `asia-session` |
-| `OPENROUTER_API_KEY` | Optional (LLM fallback #3) | [openrouter.ai/keys](https://openrouter.ai/keys) | `london-session`, `ny-session`, `asia-session` |
+| `DEEPSEEK_API_KEY` | Optional (LLM fallback #3; preferred DeepSeek path) | [platform.deepseek.com](https://platform.deepseek.com/api_keys) | `london-session`, `ny-session`, `asia-session` |
+| `OPENROUTER_API_KEY` | Optional (LLM fallback #4; also votes DeepSeek via OpenRouter if `DEEPSEEK_API_KEY` is unset) | [openrouter.ai/keys](https://openrouter.ai/keys) | `london-session`, `ny-session`, `asia-session` |
 
 **Not a user secret:** `GITHUB_TOKEN` is injected automatically by Actions (mapped to `GH_TOKEN` in workflows). It powers checkout (private repos), Issue creation, feedback comments, and weekly accuracy. `ci.yml` needs no user secrets.
 
@@ -65,11 +68,11 @@ If you set a `permissions:` block, any omitted scope defaults to **none**. Grant
 | Goal | Secrets to add |
 |------|----------------|
 | Session runs + GitHub Issues only | none (Issues work via `GITHUB_TOKEN`); macro stays neutral without LLM keys |
-| Session runs + LLM macro | at least one of `GROQ_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` |
+| Session runs + LLM macro | at least one of `GROQ_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` |
 | Telegram alerts + Accurate/Wrong buttons | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` |
 | Poll button feedback into Issues | `TELEGRAM_BOT_TOKEN` (plus Issues permission via `GITHUB_TOKEN`) |
 
-Optional **Variables** (or env), not secrets: `GROQ_MODEL`, `GEMINI_MODEL`, `OPENROUTER_MODEL`.  
+Optional **Variables** (or env), not secrets: `GROQ_MODEL`, `GEMINI_MODEL`, `DEEPSEEK_MODEL`, `OPENROUTER_MODEL`, `OPENROUTER_DEEPSEEK_MODEL`.  
 Local-only (see `.env.example`): `GH_TOKEN`, `GITHUB_REPOSITORY`, `ORACLE_DRY_RUN`.
 
 Do **not** commit API keys — use repository Secrets for Actions and `.env` locally. Workflows only reference `${{ secrets.* }}`; `.env` is gitignored.
@@ -156,7 +159,7 @@ Session cron → GoldOracle.run()
                  ├─ DXY synthesizer (Yahoo)
                  ├─ Technical analyst (EMA/RSI)
                  ├─ Correlation engine
-                 └─ Macro analyst (Groq → Gemini → OpenRouter cascade)
+                 └─ Macro analyst (Groq → Gemini → DeepSeek → OpenRouter cascade)
                         ↓
                  Aggregate decision + multi-LLM BUY/SELL/HOLD vote
                         ├─ GitHub Issue

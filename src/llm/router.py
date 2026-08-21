@@ -4,9 +4,14 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import requests
+
+
+# OpenRouter DeepSeek model used only when DEEPSEEK_API_KEY is unset
+# (avoids double-counting the same model when direct DeepSeek is configured).
+_OPENROUTER_DEEPSEEK_MODEL = "deepseek/deepseek-chat"
 
 
 class FreeLLMRouter:
@@ -16,22 +21,29 @@ class FreeLLMRouter:
         self.keys = {
             "groq": os.getenv("GROQ_API_KEY", "").strip() or None,
             "gemini": os.getenv("GEMINI_API_KEY", "").strip() or None,
+            "deepseek": os.getenv("DEEPSEEK_API_KEY", "").strip() or None,
             "openrouter": os.getenv("OPENROUTER_API_KEY", "").strip() or None,
         }
         self.timeout = timeout
         # Prefer env overrides so Actions/local can pin without code edits
         self.groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
         self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        # deepseek-v4-flash is the current cheap default; deepseek-chat retired 2026-07-24
+        self.deepseek_model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
         self.openrouter_model = os.getenv(
             "OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"
         )
+        self.openrouter_deepseek_model = os.getenv(
+            "OPENROUTER_DEEPSEEK_MODEL", _OPENROUTER_DEEPSEEK_MODEL
+        )
 
     def available_providers(self) -> List[str]:
-        return [name for name in ("groq", "gemini", "openrouter") if self.keys.get(name)]
+        """Providers that will vote in query_all (includes OpenRouter-DeepSeek when eligible)."""
+        return [name for name, _ in self._vote_providers()]
 
     def query(self, prompt: str, system: str = "You are a macro forex analyst.") -> Dict[str, Any]:
-        """Try Groq -> Gemini -> OpenRouter. Return parsed JSON or neutral fallback."""
-        for name, fn in self._providers():
+        """Try Groq -> Gemini -> DeepSeek -> OpenRouter. Return parsed JSON or neutral fallback."""
+        for name, fn in self._cascade_providers():
             if not self.keys.get(name):
                 continue
             try:
@@ -50,9 +62,7 @@ class FreeLLMRouter:
     def query_all(self, prompt: str, system: str = "You are a macro forex analyst.") -> List[Dict[str, Any]]:
         """Query every configured provider independently. Failures are skipped, not cascaded."""
         results: List[Dict[str, Any]] = []
-        for name, fn in self._providers():
-            if not self.keys.get(name):
-                continue
+        for name, fn in self._vote_providers():
             try:
                 payload = fn(prompt, system)
                 results.append({"provider": name, "payload": payload})
@@ -60,12 +70,33 @@ class FreeLLMRouter:
                 print(f"[LLM] {name} vote failed: {e}")
         return results
 
-    def _providers(self):
+    def _cascade_providers(self) -> Tuple[Tuple[str, Any], ...]:
+        """Ordered cascade for single-response query()."""
         return (
             ("groq", self._groq),
             ("gemini", self._gemini),
+            ("deepseek", self._deepseek),
             ("openrouter", self._openrouter),
         )
+
+    def _vote_providers(self) -> List[Tuple[str, Any]]:
+        """Providers used for multi-LLM voting.
+
+        Direct DeepSeek wins when DEEPSEEK_API_KEY is set. If only OpenRouter is
+        configured, also cast a DeepSeek vote via OpenRouter (no double-count).
+        """
+        providers: List[Tuple[str, Any]] = []
+        for name, fn in (
+            ("groq", self._groq),
+            ("gemini", self._gemini),
+            ("deepseek", self._deepseek),
+            ("openrouter", self._openrouter),
+        ):
+            if self.keys.get(name):
+                providers.append((name, fn))
+        if self.keys.get("openrouter") and not self.keys.get("deepseek"):
+            providers.append(("openrouter_deepseek", self._openrouter_deepseek))
+        return providers
 
     def _groq(self, prompt: str, system: str) -> Dict[str, Any]:
         url = "https://api.groq.com/openai/v1/chat/completions"
@@ -108,7 +139,36 @@ class FreeLLMRouter:
         text = data["candidates"][0]["content"]["parts"][0]["text"]
         return self._safe_json_parse(text)
 
+    def _deepseek(self, prompt: str, system: str) -> Dict[str, Any]:
+        """Direct DeepSeek OpenAI-compatible chat API (requires DEEPSEEK_API_KEY)."""
+        url = "https://api.deepseek.com/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.keys['deepseek']}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.deepseek_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+            "max_tokens": 512,
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"]
+        return self._safe_json_parse(content)
+
     def _openrouter(self, prompt: str, system: str) -> Dict[str, Any]:
+        return self._openrouter_chat(prompt, system, self.openrouter_model)
+
+    def _openrouter_deepseek(self, prompt: str, system: str) -> Dict[str, Any]:
+        """DeepSeek via OpenRouter when DEEPSEEK_API_KEY is not set."""
+        return self._openrouter_chat(prompt, system, self.openrouter_deepseek_model)
+
+    def _openrouter_chat(self, prompt: str, system: str, model: str) -> Dict[str, Any]:
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.keys['openrouter']}",
@@ -117,7 +177,7 @@ class FreeLLMRouter:
             "X-Title": "DXY-Gold Oracle",
         }
         payload = {
-            "model": self.openrouter_model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
@@ -189,7 +249,7 @@ Return ONLY a JSON object with this exact schema:
         """Ask each configured LLM to vote BUY/SELL/HOLD on gold and DXY.
 
         Returns a list of {provider, payload} dicts. Empty if no keys or all calls fail.
-        One key is enough; all three are used when present.
+        One key is enough; all configured providers are used when present.
         """
         prompt = f"""You are voting on a pre-session directional bias for educational research (not trade execution or financial advice).
 
