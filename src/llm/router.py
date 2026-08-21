@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List
 
 import requests
 
@@ -26,14 +26,12 @@ class FreeLLMRouter:
             "OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"
         )
 
+    def available_providers(self) -> List[str]:
+        return [name for name in ("groq", "gemini", "openrouter") if self.keys.get(name)]
+
     def query(self, prompt: str, system: str = "You are a macro forex analyst.") -> Dict[str, Any]:
         """Try Groq -> Gemini -> OpenRouter. Return parsed JSON or neutral fallback."""
-        providers = [
-            ("groq", self._groq),
-            ("gemini", self._gemini),
-            ("openrouter", self._openrouter),
-        ]
-        for name, fn in providers:
+        for name, fn in self._providers():
             if not self.keys.get(name):
                 continue
             try:
@@ -48,6 +46,26 @@ class FreeLLMRouter:
             "key_factors": ["No LLM available"],
             "session_context": "LLM providers unavailable; macro score neutral.",
         }
+
+    def query_all(self, prompt: str, system: str = "You are a macro forex analyst.") -> List[Dict[str, Any]]:
+        """Query every configured provider independently. Failures are skipped, not cascaded."""
+        results: List[Dict[str, Any]] = []
+        for name, fn in self._providers():
+            if not self.keys.get(name):
+                continue
+            try:
+                payload = fn(prompt, system)
+                results.append({"provider": name, "payload": payload})
+            except Exception as e:
+                print(f"[LLM] {name} vote failed: {e}")
+        return results
+
+    def _providers(self):
+        return (
+            ("groq", self._groq),
+            ("gemini", self._gemini),
+            ("openrouter", self._openrouter),
+        )
 
     def _groq(self, prompt: str, system: str) -> Dict[str, Any]:
         url = "https://api.groq.com/openai/v1/chat/completions"
@@ -165,4 +183,35 @@ Return ONLY a JSON object with this exact schema:
         return self.query(
             prompt,
             system="You are a senior macro forex and commodities analyst. Be concise and factual.",
+        )
+
+    def analyze_trading_opinion(self, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Ask each configured LLM to vote BUY/SELL/HOLD on gold and DXY.
+
+        Returns a list of {provider, payload} dicts. Empty if no keys or all calls fail.
+        One key is enough; all three are used when present.
+        """
+        prompt = f"""You are voting on a pre-session directional bias for educational research (not trade execution or financial advice).
+
+Session: {context.get("session", "unknown")}
+Synthetic DXY: {context.get("current_dxy", "n/a")} ({context.get("dxy_bias", "n/a")}, {context.get("hourly_change_pct", "n/a")}% 1h)
+Gold: ~{context.get("gold_price", "n/a")} | technicals {context.get("tech_signal", "n/a")} | RSI {context.get("rsi", "n/a")}
+DXY–Gold correlation: {context.get("corr_regime", "n/a")} (r={context.get("correlation", "n/a")})
+Macro sentiment: {context.get("macro_sentiment", "n/a")} — {context.get("macro_context", "")}
+Agent aggregate: {context.get("direction", "n/a")} (score {context.get("score", "n/a")})
+
+Return ONLY a JSON object with this exact schema:
+{{
+  "gold_action": "BUY" | "SELL" | "HOLD",
+  "dxy_action": "BUY" | "SELL" | "HOLD",
+  "confidence": <integer from 0 to 100>,
+  "rationale": "<one sentence, max 25 words>"
+}}
+"""
+        return self.query_all(
+            prompt,
+            system=(
+                "You are a senior macro forex and commodities analyst. "
+                "Vote BUY/SELL/HOLD only. Be concise. Return valid JSON."
+            ),
         )

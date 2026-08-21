@@ -7,7 +7,14 @@ from typing import Any, Dict
 from src.agents.correlation_engine import analyze_dxy_gold_correlation
 from src.agents.dxy_synthesizer import fetch_components, fetch_gold, get_dxy_context
 from src.agents.macro_analyst import analyze_macro_sentiment
+from src.agents.opinion import (
+    aggregate_opinion,
+    dxy_action_from_bias,
+    gold_action_from_direction,
+    parse_llm_vote,
+)
 from src.agents.technical_analyst import analyze_technicals
+from src.llm.router import FreeLLMRouter
 
 
 class GoldOracle:
@@ -43,23 +50,32 @@ class GoldOracle:
         self.context["macro"] = macro
 
         decision = self._aggregate(dxy_ctx, tech, corr, macro)
+        rationale = self._build_rationale(dxy_ctx, tech, corr, macro)
+        opinion = self._form_opinion(dxy_ctx, tech, corr, macro, decision, rationale)
 
         report = {
             "timestamp": timestamp,
             "session": self.session,
             "decision": decision,
+            "opinion": opinion,
             "agents": self.context,
             "trade_setup": {
                 "recommended_direction": decision["direction"],
                 "confidence": f"{decision['confidence'] * 100:.1f}%",
                 "score": decision["score"],
-                "rationale": self._build_rationale(dxy_ctx, tech, corr, macro),
+                "rationale": rationale,
             },
         }
 
         print(
             f"[Oracle] Decision: {decision['direction']} "
             f"(confidence: {decision['confidence']:.0%})"
+        )
+        print(
+            f"[Oracle] Opinion: GOLD {opinion['gold_action']} / "
+            f"DXY {opinion['dxy_action']} "
+            f"({opinion['confidence_label']} {opinion['confidence']}) "
+            f"— {opinion['consensus_note']}"
         )
         return report
 
@@ -113,3 +129,57 @@ class GoldOracle:
             f"({macro.get('session_context', '')}).",
         ]
         return " ".join(parts)
+
+    def _form_opinion(
+        self, dxy: Dict, tech: Dict, corr: Dict, macro: Dict, decision: Dict, rationale: str
+    ) -> Dict[str, Any]:
+        """Multi-LLM BUY/SELL/HOLD vote, falling back to agent consensus."""
+        agent_gold = gold_action_from_direction(decision.get("direction", "NEUTRAL"))
+        agent_dxy = dxy_action_from_bias(dxy.get("dxy_bias", "NEUTRAL"))
+        try:
+            agent_conf = int(round(min(1.0, abs(float(decision.get("confidence") or 0))) * 100))
+        except (TypeError, ValueError):
+            agent_conf = 50
+
+        router = FreeLLMRouter()
+        keys_configured = len(router.available_providers())
+        context = {
+            "session": self.session,
+            "current_dxy": dxy.get("current_dxy"),
+            "dxy_bias": dxy.get("dxy_bias"),
+            "hourly_change_pct": dxy.get("hourly_change_pct"),
+            "gold_price": tech.get("price"),
+            "tech_signal": tech.get("signal"),
+            "rsi": tech.get("rsi"),
+            "corr_regime": corr.get("regime"),
+            "correlation": corr.get("correlation"),
+            "macro_sentiment": macro.get("sentiment"),
+            "macro_context": macro.get("session_context") or "",
+            "direction": decision.get("direction"),
+            "score": decision.get("score"),
+        }
+
+        raw_votes: list = []
+        if keys_configured:
+            print(f"[Oracle] Collecting trading votes from {keys_configured} LLM(s)...")
+            try:
+                raw_votes = router.analyze_trading_opinion(context)
+            except Exception as e:
+                print(f"[Oracle] LLM opinion swarm failed: {e}")
+                raw_votes = []
+
+        votes = [
+            parse_llm_vote(item.get("provider", "unknown"), item.get("payload"))
+            for item in raw_votes
+            if isinstance(item, dict)
+        ]
+
+        opinion = aggregate_opinion(
+            agent_gold=agent_gold,
+            agent_dxy=agent_dxy,
+            agent_confidence=agent_conf,
+            agent_rationale=rationale,
+            votes=votes,
+            keys_configured=keys_configured,
+        )
+        return opinion

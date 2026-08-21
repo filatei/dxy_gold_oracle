@@ -14,8 +14,9 @@ Three times per trading day the Oracle:
 2. Synthesizes a geometric DXY proxy from basket weights
 3. Runs technicals (EMA/RSI), DXY–gold correlation, and macro sentiment via free LLMs
 4. Aggregates a direction + confidence score
-5. Opens a GitHub Issue (audit trail) and optionally alerts Telegram with Accurate/Wrong buttons
-6. Collects Telegram feedback into issue comments for weekly accuracy reporting
+5. Asks every configured LLM (Groq, Gemini, OpenRouter) to vote **BUY / SELL / HOLD** on GOLD and DXY; majority wins (one key is enough; agent consensus if none)
+6. Opens a GitHub Issue (audit trail) and optionally alerts Telegram — opinion block at the top, plus Accurate/Wrong buttons
+7. Collects Telegram feedback into issue comments for weekly accuracy reporting
 
 ### Session schedule (UTC)
 
@@ -71,7 +72,7 @@ If you set a `permissions:` block, any omitted scope defaults to **none**. Grant
 Optional **Variables** (or env), not secrets: `GROQ_MODEL`, `GEMINI_MODEL`, `OPENROUTER_MODEL`.  
 Local-only (see `.env.example`): `GH_TOKEN`, `GITHUB_REPOSITORY`, `ORACLE_DRY_RUN`.
 
-Do **not** commit API keys — use repository Secrets for Actions and `.env` locally.
+Do **not** commit API keys — use repository Secrets for Actions and `.env` locally. Workflows only reference `${{ secrets.* }}`; `.env` is gitignored.
 
 ---
 
@@ -155,11 +156,11 @@ Session cron → GoldOracle.run()
                  ├─ DXY synthesizer (Yahoo)
                  ├─ Technical analyst (EMA/RSI)
                  ├─ Correlation engine
-                 └─ Macro analyst (Groq → Gemini → OpenRouter)
+                 └─ Macro analyst (Groq → Gemini → OpenRouter cascade)
                         ↓
-                 Aggregate decision
+                 Aggregate decision + multi-LLM BUY/SELL/HOLD vote
                         ├─ GitHub Issue
-                        └─ Telegram (+ feedback buttons)
+                        └─ Telegram (opinion at top + feedback buttons)
                                ↓
                         Feedback collector → Issue comment
 ```
@@ -176,6 +177,8 @@ Session cron → GoldOracle.run()
 Thresholds: ≥4 BULLISH, 2–3 MODERATE_BULLISH, ≤−4 BEARISH, −3…−2 MODERATE_BEARISH, else NEUTRAL.  
 Confidence = `min(|score| / 10, 1.0)`.
 
+**Telegram opinion:** each configured LLM votes `gold_action` / `dxy_action` (`BUY` | `SELL` | `HOLD`). Majority vote is shown at the top of the Telegram message (🟢 BUY / 🔴 SELL / ⚪ HOLD) with 0–100 confidence, a one-line rationale, and a consensus note (e.g. `2/3 models lean GOLD BUY`). Invalid JSON is coerced to HOLD so a bad model reply cannot crash the send. Dry-run prints the same opinion block to the console. Educational bias only — not financial advice.
+
 ---
 
 ## Layout
@@ -188,7 +191,7 @@ dxy_gold_oracle/
 ├── src/
 │   ├── main.py            # CLI entry: python -m src.main
 │   ├── config.py
-│   ├── agents/            # oracle + specialists
+│   ├── agents/            # oracle + specialists + opinion vote
 │   ├── llm/router.py
 │   └── utils/             # GitHub / Telegram / weekly accuracy
 ├── tests/                 # offline unit tests

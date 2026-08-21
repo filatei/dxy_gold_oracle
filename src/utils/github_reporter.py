@@ -6,6 +6,8 @@ from typing import List, Optional
 
 import requests
 
+from src.agents.opinion import normalize_action
+
 
 class GitHubReporter:
     def __init__(self):
@@ -30,8 +32,11 @@ class GitHubReporter:
         session = report["session"].upper()
         decision = report["decision"]
         setup = report["trade_setup"]
+        opinion = report.get("opinion") or {}
+        gold = normalize_action(opinion.get("gold_action"))
+        dxy = normalize_action(opinion.get("dxy_action"))
 
-        title = f"[{session}] Gold Direction: {decision['direction']}"
+        title = f"[{session}] GOLD {gold} / DXY {dxy} — {decision['direction']}"
 
         body = f"""## Oracle Decision for {session} Session
 
@@ -39,6 +44,14 @@ class GitHubReporter:
 **Direction:** `{decision['direction']}`  
 **Confidence:** {setup['confidence']}  
 **Aggregate Score:** {decision['score']}/10
+
+### Trading Opinion
+**GOLD:** `{gold}`  
+**DXY:** `{dxy}`  
+**Confidence:** {opinion.get('confidence_label', '')} ({opinion.get('confidence', 'n/a')})  
+**Consensus:** {opinion.get('consensus_note', 'n/a')}  
+
+{opinion.get('rationale') or ''}
 
 ### Agents Consensus
 | Agent | Signal | Detail |

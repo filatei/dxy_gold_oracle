@@ -98,9 +98,15 @@ def main(argv: list[str] | None = None) -> int:
     oracle = GoldOracle(session=args.session)
     report = oracle.run()
 
+    telegram = TelegramReporter()
     print("\n" + "=" * 50)
+    print(telegram.format_opinion_plain(report.get("opinion") or {}))
+    print("=" * 50)
     print("REPORT:")
     print(json.dumps(report, indent=2, default=str))
+    print("=" * 50)
+    print("TELEGRAM MESSAGE:")
+    print(telegram.format_message(report))
     print("=" * 50)
 
     issue_number = None
@@ -111,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[GitHub Reporter] Warning: {e}")
 
         try:
-            TelegramReporter().send_report(report, issue_number=issue_number)
+            telegram.send_report(report, issue_number=issue_number)
         except Exception as e:
             print(f"[Telegram Reporter] Warning: {e}")
     else:

@@ -18,6 +18,16 @@ from src.agents.dxy_synthesizer import (
 )
 from src.agents.macro_analyst import analyze_macro_sentiment, _safe_int_score
 from src.agents.oracle import GoldOracle
+from src.agents.opinion import (
+    aggregate_opinion,
+    consensus_note,
+    dxy_action_from_bias,
+    gold_action_from_direction,
+    majority_action,
+    normalize_action,
+    normalize_confidence,
+    parse_llm_vote,
+)
 from src.agents.technical_analyst import analyze_technicals
 from src.llm.router import FreeLLMRouter
 from src.utils.telegram_reporter import TelegramReporter
@@ -182,3 +192,242 @@ def test_main_cli_help():
     with pytest.raises(SystemExit) as exc:
         main(["--help"])
     assert exc.value.code == 0
+
+
+def test_normalize_action_aliases_and_junk():
+    assert normalize_action("buy") == "BUY"
+    assert normalize_action("LONG") == "BUY"
+    assert normalize_action("gold_sell") == "SELL"
+    assert normalize_action("NEUTRAL") == "HOLD"
+    assert normalize_action("YOLO") == "HOLD"
+    assert normalize_action(None) == "HOLD"
+    assert normalize_action("<script>alert(1)</script>") == "HOLD"
+
+
+def test_normalize_confidence_fraction_and_clamp():
+    assert normalize_confidence(0.8) == 80
+    assert normalize_confidence(72) == 72
+    assert normalize_confidence(150) == 100
+    assert normalize_confidence(-3) == 0
+    assert normalize_confidence("nope", default=50) == 50
+
+
+def test_majority_action_ties_hold():
+    assert majority_action(["BUY", "BUY", "SELL"]) == "BUY"
+    assert majority_action(["BUY", "SELL"]) == "HOLD"
+    assert majority_action(["BUY", "SELL"], tiebreaker="BUY") == "BUY"
+    assert majority_action([]) == "HOLD"
+
+
+def test_agent_direction_maps_to_actions():
+    assert gold_action_from_direction("BULLISH") == "BUY"
+    assert gold_action_from_direction("MODERATE_BEARISH") == "SELL"
+    assert gold_action_from_direction("NEUTRAL") == "HOLD"
+    assert dxy_action_from_bias("WEAK_DXY") == "SELL"
+    assert dxy_action_from_bias("STRONG_DXY") == "BUY"
+
+
+def test_parse_llm_vote_coerces_bad_json_fields():
+    vote = parse_llm_vote(
+        "groq",
+        {"gold_action": "yolo", "dxy_action": 123, "confidence": "0.4", "rationale": "x"},
+    )
+    assert vote["gold_action"] == "HOLD"
+    assert vote["dxy_action"] == "HOLD"
+    assert vote["confidence"] == 40
+    assert vote["source"] == "groq"
+
+
+def test_aggregate_opinion_majority_and_consensus_note():
+    votes = [
+        {
+            "source": "groq",
+            "gold_action": "BUY",
+            "dxy_action": "SELL",
+            "confidence": 80,
+            "rationale": "Mock vote A.",
+        },
+        {
+            "source": "gemini",
+            "gold_action": "BUY",
+            "dxy_action": "HOLD",
+            "confidence": 60,
+            "rationale": "Mock vote B.",
+        },
+        {
+            "source": "openrouter",
+            "gold_action": "SELL",
+            "dxy_action": "SELL",
+            "confidence": 40,
+            "rationale": "Mock vote C.",
+        },
+    ]
+    out = aggregate_opinion(
+        agent_gold="HOLD",
+        agent_dxy="HOLD",
+        agent_confidence=50,
+        agent_rationale="agent fallback",
+        votes=votes,
+        keys_configured=3,
+    )
+    assert out["gold_action"] == "BUY"
+    assert out["dxy_action"] == "SELL"
+    assert out["confidence"] == 60
+    assert "2/3 models lean GOLD BUY" in out["consensus_note"]
+    assert "2/3 lean DXY SELL" in out["consensus_note"]
+    assert out["rationale"] == "Mock vote A."
+
+
+def test_aggregate_opinion_no_llms_uses_agent():
+    out = aggregate_opinion(
+        agent_gold="BUY",
+        agent_dxy="SELL",
+        agent_confidence=60,
+        agent_rationale="DXY is WEAK_DXY.",
+        votes=[],
+        keys_configured=0,
+    )
+    assert out["gold_action"] == "BUY"
+    assert out["dxy_action"] == "SELL"
+    assert out["llm_count"] == 0
+    assert "No LLM keys" in out["consensus_note"]
+
+
+def test_oracle_form_opinion_agent_fallback(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    oracle = GoldOracle("london")
+    opinion = oracle._form_opinion(
+        {"dxy_bias": "WEAK_DXY"},
+        {"price": 0, "signal": "NEUTRAL", "rsi": 50},
+        {"regime": "NEUTRAL", "correlation": 0},
+        {"sentiment": "NEUTRAL", "session_context": ""},
+        {"direction": "BULLISH", "confidence": 0.6, "score": 6},
+        "DXY is WEAK_DXY.",
+    )
+    assert opinion["gold_action"] == "BUY"
+    assert opinion["dxy_action"] == "SELL"
+    assert opinion["llm_count"] == 0
+
+
+def test_oracle_form_opinion_majority_from_mocked_llms():
+    raw = [
+        {
+            "provider": "groq",
+            "payload": {
+                "gold_action": "BUY",
+                "dxy_action": "SELL",
+                "confidence": 80,
+                "rationale": "Mock groq vote.",
+            },
+        },
+        {
+            "provider": "gemini",
+            "payload": {
+                "gold_action": "BUY",
+                "dxy_action": "SELL",
+                "confidence": 50,
+                "rationale": "Mock gemini vote.",
+            },
+        },
+    ]
+    oracle = GoldOracle("ny")
+    with patch("src.agents.oracle.FreeLLMRouter") as cls:
+        inst = cls.return_value
+        inst.available_providers.return_value = ["groq", "gemini"]
+        inst.analyze_trading_opinion.return_value = raw
+        opinion = oracle._form_opinion(
+            {"dxy_bias": "NEUTRAL"},
+            {},
+            {},
+            {},
+            {"direction": "NEUTRAL", "confidence": 0.1, "score": 0},
+            "flat",
+        )
+    assert opinion["gold_action"] == "BUY"
+    assert opinion["dxy_action"] == "SELL"
+    assert opinion["llm_count"] == 2
+    assert "GOLD BUY" in opinion["consensus_note"]
+
+
+def test_query_all_only_configured(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    router = FreeLLMRouter()
+    with patch.object(router, "_groq", return_value={"gold_action": "HOLD"}):
+        with patch.object(router, "_gemini") as gem:
+            with patch.object(router, "_openrouter") as opr:
+                results = router.query_all("p", "s")
+    assert len(results) == 1
+    assert results[0]["provider"] == "groq"
+    gem.assert_not_called()
+    opr.assert_not_called()
+
+
+def _sample_report(**opinion_overrides):
+    opinion = {
+        "gold_action": "BUY",
+        "dxy_action": "SELL",
+        "confidence": 72,
+        "confidence_label": "High",
+        "rationale": "Mock rationale for formatter test.",
+        "consensus_note": "2/3 models lean GOLD BUY",
+    }
+    opinion.update(opinion_overrides)
+    return {
+        "session": "london",
+        "timestamp": "2026-08-21T07:00:00",
+        "decision": {"direction": "BULLISH", "confidence": 0.6, "score": 6},
+        "trade_setup": {"confidence": "60.0%", "rationale": "formatter test rationale"},
+        "agents": {
+            "dxy": {"dxy_bias": "WEAK_DXY"},
+            "tech": {"signal": "BULLISH"},
+            "macro": {"sentiment": "BULLISH"},
+            "corr": {"regime": "STRONG_INVERSE"},
+        },
+        "opinion": opinion,
+    }
+
+
+def test_telegram_opinion_block_prominent():
+    text = TelegramReporter().format_message(_sample_report())
+    assert "GOLD: BUY" in text
+    assert "DXY: SELL" in text
+    assert text.index("OPINION") < text.index("Direction:")
+    assert text.index("GOLD: BUY") < text.index("Direction:")
+    assert "🟢" in text
+    assert "2/3 models lean GOLD BUY" in text
+
+
+def test_telegram_invalid_actions_hold_and_escape():
+    text = TelegramReporter().format_message(
+        _sample_report(
+            gold_action="YOLO",
+            dxy_action="<script>",
+            rationale="a < b & c",
+            consensus_note="",
+        )
+    )
+    assert "GOLD: HOLD" in text
+    assert "DXY: HOLD" in text
+    assert "<script>" not in text
+    assert "a &lt; b &amp; c" in text
+
+
+def test_telegram_plain_opinion_matches_actions():
+    plain = TelegramReporter().format_opinion_plain(_sample_report()["opinion"])
+    assert "GOLD: BUY" in plain
+    assert "DXY: SELL" in plain
+    assert "High (72)" in plain
+
+
+def test_consensus_note_single_model():
+    note = consensus_note(
+        [{"gold_action": "HOLD", "dxy_action": "HOLD"}],
+        "HOLD",
+        "HOLD",
+    )
+    assert note.startswith("1/1 model:")
+

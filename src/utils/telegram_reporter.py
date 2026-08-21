@@ -7,6 +7,25 @@ from typing import Dict, List, Optional
 
 import requests
 
+from src.agents.opinion import (
+    ACTIONS,
+    confidence_label,
+    normalize_action,
+    normalize_confidence,
+    one_line,
+)
+
+_ACTION_EMOJI = {"BUY": "🟢", "SELL": "🔴", "HOLD": "⚪"}
+
+
+def _html_escape(text: str) -> str:
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
 
 class TelegramReporter:
     def __init__(self):
@@ -26,7 +45,7 @@ class TelegramReporter:
             print("[Telegram] Not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
             return {}
 
-        text = self._format_message(report)
+        text = self.format_message(report)
         keyboard = self._build_keyboard(issue_number) if issue_number else None
 
         results: Dict[str, int] = {}
@@ -71,36 +90,95 @@ class TelegramReporter:
             ]
         }
 
-    def _format_message(self, report: dict) -> str:
-        session = report["session"].upper()
-        decision = report["decision"]
-        setup = report["trade_setup"]
+    def format_message(self, report: dict) -> str:
+        """Public formatter used by send_report and dry-run console output."""
+        session = str(report.get("session") or "session").upper()
+        decision = report.get("decision") or {}
+        setup = report.get("trade_setup") or {}
+        opinion_block = self.format_opinion_block(report.get("opinion") or {})
 
+        direction = str(decision.get("direction") or "NEUTRAL")
         direction_emoji = {
             "BULLISH": "🟢",
             "MODERATE_BULLISH": "🟢",
             "BEARISH": "🔴",
             "MODERATE_BEARISH": "🔴",
             "NEUTRAL": "⚪",
-        }.get(decision["direction"], "⚪")
+        }.get(direction, "⚪")
 
-        confidence_bar = self._confidence_bar(decision.get("confidence", 0))
-        rationale = (setup.get("rationale") or "N/A")[:350]
+        try:
+            conf = float(decision.get("confidence", 0) or 0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        confidence_bar = self._confidence_bar(conf)
+        setup_conf = _html_escape(str(setup.get("confidence") or f"{conf * 100:.1f}%"))
+        rationale = _html_escape(one_line(setup.get("rationale") or "N/A", 350))
+        score = _html_escape(str(decision.get("score", "n/a")))
+        agents = report.get("agents") if isinstance(report.get("agents"), dict) else {}
+        agent_lines = self._agent_signals(agents)
 
         return f"""<b>DXY-GOLD ORACLE — {session}</b>
 
-<b>Direction:</b> {direction_emoji} <code>{decision['direction']}</code>
-<b>Confidence:</b> {setup['confidence']} {confidence_bar}
-<b>Score:</b> <code>{decision['score']}/10</code>
+{opinion_block}
+
+<b>Direction:</b> {direction_emoji} <code>{_html_escape(direction)}</code>
+<b>Confidence:</b> {setup_conf} {confidence_bar}
+<b>Score:</b> <code>{score}/10</code>
 
 <b>Agent Signals:</b>
-{self._agent_signals(report.get('agents', {}))}
+{agent_lines}
 
 <b>Rationale:</b>
 <i>{rationale}</i>
 
-⏱ <i>{str(report.get('timestamp', ''))[:19]} UTC</i>
-🤖 <i>Automated via GitHub Actions</i>"""
+⏱ <i>{_html_escape(str(report.get("timestamp", ""))[:19])} UTC</i>
+🤖 <i>Automated via GitHub Actions · not financial advice</i>"""
+
+    def format_opinion_block(self, opinion: dict) -> str:
+        """HTML opinion block. Invalid LLM enums are coerced so send cannot crash."""
+        gold = normalize_action((opinion or {}).get("gold_action"))
+        dxy = normalize_action((opinion or {}).get("dxy_action"))
+        if gold not in ACTIONS:
+            gold = "HOLD"
+        if dxy not in ACTIONS:
+            dxy = "HOLD"
+        conf = normalize_confidence((opinion or {}).get("confidence"), default=0)
+        label = str((opinion or {}).get("confidence_label") or confidence_label(conf))
+        note = _html_escape(one_line((opinion or {}).get("consensus_note") or "", 180))
+        rationale = _html_escape(one_line((opinion or {}).get("rationale") or "", 200))
+        bar = self._confidence_bar(conf / 100.0)
+
+        lines = [
+            "📊 <b>OPINION</b>",
+            f"{_ACTION_EMOJI[gold]} <b>GOLD: {gold}</b>",
+            f"{_ACTION_EMOJI[dxy]} <b>DXY: {dxy}</b>",
+            f"<b>Confidence:</b> {label} ({conf}) {bar}",
+        ]
+        if note:
+            lines.append(f"<i>{note}</i>")
+        if rationale:
+            lines.append(f"<i>{rationale}</i>")
+        return "\n".join(lines)
+
+    def format_opinion_plain(self, opinion: dict) -> str:
+        """Plaintext twin of the Telegram opinion block (dry-run console)."""
+        gold = normalize_action((opinion or {}).get("gold_action"))
+        dxy = normalize_action((opinion or {}).get("dxy_action"))
+        conf = normalize_confidence((opinion or {}).get("confidence"), default=0)
+        label = str((opinion or {}).get("confidence_label") or confidence_label(conf))
+        note = one_line((opinion or {}).get("consensus_note") or "", 180)
+        rationale = one_line((opinion or {}).get("rationale") or "", 200)
+        lines = [
+            "OPINION",
+            f"  {_ACTION_EMOJI[gold]} GOLD: {gold}",
+            f"  {_ACTION_EMOJI[dxy]} DXY: {dxy}",
+            f"  Confidence: {label} ({conf})",
+        ]
+        if note:
+            lines.append(f"  {note}")
+        if rationale:
+            lines.append(f"  {rationale}")
+        return "\n".join(lines)
 
     def _confidence_bar(self, conf: float) -> str:
         try:
@@ -123,7 +201,7 @@ class TelegramReporter:
                 display = val.get(subkey, str(val))
             else:
                 display = str(val)
-            lines.append(f"  {label}: <code>{display}</code>")
+            lines.append(f"  {label}: <code>{_html_escape(str(display))}</code>")
         return "\n".join(lines) if lines else "  <i>No agent data</i>"
 
     def send_test_message(self) -> bool:
@@ -135,7 +213,9 @@ class TelegramReporter:
             "You will receive 3 reports daily:\n"
             "• 07:00 UTC (London)\n"
             "• 13:30 UTC (New York)\n"
-            "• 22:00 UTC (Asia)"
+            "• 22:00 UTC (Asia)\n\n"
+            "Each report leads with a multi-LLM <b>BUY / SELL / HOLD</b> "
+            "opinion for GOLD and DXY."
         )
         ok_any = False
         for chat_id in self.chat_ids:
