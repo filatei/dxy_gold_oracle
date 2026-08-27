@@ -18,6 +18,8 @@ Three times per trading day the Oracle:
 6. Opens a GitHub Issue (audit trail) and optionally alerts Telegram — opinion block at the top, plus Accurate/Wrong buttons
 7. Collects Telegram feedback into issue comments for weekly accuracy reporting
 
+Separately, a **15-minute cron** watches gold futures (`GC=F`) for unusual short-window moves near round **$50** psychological levels and Telegram-alerts when both conditions fire (with cooldown to avoid spam).
+
 ### Session schedule (UTC)
 
 | Session | Cron | Notes |
@@ -39,8 +41,8 @@ Exact names must match (code reads `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, and `OP
 
 | Secret name | Required? | Where to get it | Workflows that need it |
 |-------------|-----------|-----------------|------------------------|
-| `TELEGRAM_BOT_TOKEN` | Optional (needed for Telegram alerts / feedback) | [@BotFather](https://t.me/botfather) | `london-session`, `ny-session`, `asia-session`, `telegram-feedback`, `test-telegram` |
-| `TELEGRAM_CHAT_ID` | Optional (with bot token) | [@userinfobot](https://t.me/userinfobot); groups: `getUpdates` after adding the bot. Multiple IDs: `123,-100456` | `london-session`, `ny-session`, `asia-session`, `test-telegram` |
+| `TELEGRAM_BOT_TOKEN` | Optional (needed for Telegram alerts / feedback) | [@BotFather](https://t.me/botfather) | `london-session`, `ny-session`, `asia-session`, `xau-price-alerts`, `telegram-feedback`, `test-telegram` |
+| `TELEGRAM_CHAT_ID` | Optional (with bot token) | [@userinfobot](https://t.me/userinfobot); groups: `getUpdates` after adding the bot. Multiple IDs: `123,-100456` | `london-session`, `ny-session`, `asia-session`, `xau-price-alerts`, `test-telegram` |
 | `GROQ_API_KEY` | Optional (recommended; first LLM in cascade) | [console.groq.com/keys](https://console.groq.com/keys) | `london-session`, `ny-session`, `asia-session` |
 | `GEMINI_API_KEY` | Optional (LLM fallback #2) | [Google AI Studio](https://aistudio.google.com/app/apikey) | `london-session`, `ny-session`, `asia-session` |
 | `DEEPSEEK_API_KEY` | Optional (LLM fallback #3; preferred DeepSeek path) | [platform.deepseek.com](https://platform.deepseek.com/api_keys) | `london-session`, `ny-session`, `asia-session` |
@@ -60,7 +62,7 @@ permissions:
 
 If you set a `permissions:` block, any omitted scope defaults to **none**. Granting only `issues: write` (without `contents: read`) makes checkout fail with `remote: Repository not found` — GitHub hides private repos from tokens that lack Contents access.
 
-`telegram-feedback.yml` uses `contents: write` so it can commit the Telegram offset file.
+`telegram-feedback.yml` and `xau-price-alerts.yml` use `contents: write` so they can commit cooldown/offset state under `data/`.
 
 
 **Minimal fork setup**
@@ -70,9 +72,10 @@ If you set a `permissions:` block, any omitted scope defaults to **none**. Grant
 | Session runs + GitHub Issues only | none (Issues work via `GITHUB_TOKEN`); macro stays neutral without LLM keys |
 | Session runs + LLM macro | at least one of `GROQ_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` |
 | Telegram alerts + Accurate/Wrong buttons | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` |
+| Intraday XAUUSD key-level move alerts | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` |
 | Poll button feedback into Issues | `TELEGRAM_BOT_TOKEN` (plus Issues permission via `GITHUB_TOKEN`) |
 
-Optional **Variables** (or env), not secrets: `GROQ_MODEL`, `GEMINI_MODEL`, `DEEPSEEK_MODEL`, `OPENROUTER_MODEL`, `OPENROUTER_DEEPSEEK_MODEL`.  
+Optional **Variables** (or env), not secrets: `GROQ_MODEL`, `GEMINI_MODEL`, `DEEPSEEK_MODEL`, `OPENROUTER_MODEL`, `OPENROUTER_DEEPSEEK_MODEL`, and XAU alert tunables `XAU_ALERT_MOVE_PCT`, `XAU_ALERT_WINDOW_BARS`, `XAU_ALERT_LEVEL_STEP`, `XAU_ALERT_LEVEL_PROXIMITY`, `XAU_ALERT_COOLDOWN_MINUTES` (defaults in `config/xau_price_alerts.json`).  
 Local-only (see `.env.example`): `GH_TOKEN`, `GITHUB_REPOSITORY`, `ORACLE_DRY_RUN`.
 
 Do **not** commit API keys — use repository Secrets for Actions and `.env` locally. Workflows only reference `${{ secrets.* }}`; `.env` is gitignored.
@@ -103,6 +106,7 @@ Scheduled runs only fire after Actions are enabled.
 | Workflow | Trigger |
 |----------|---------|
 | `london-session.yml` / `ny-session.yml` / `asia-session.yml` | Cron + manual |
+| `xau-price-alerts.yml` | Every 15m Mon–Fri 06–23 UTC (unusual short-window move + $50 key level) |
 | `telegram-feedback.yml` | Every 20m Mon–Fri 06–23 UTC |
 | `weekly-accuracy.yml` | Sunday 18:00 UTC |
 | `test-telegram.yml` | Manual |
@@ -140,6 +144,10 @@ python -m src.main --test-telegram
 
 # Poll Telegram callbacks → comment on Issues
 python -m src.main --collect-feedback
+
+# XAUUSD key-level / short-window move alerts (Telegram if fired)
+python -m src.main --price-alerts
+python -m src.main --price-alerts --dry-run
 
 # Weekly accuracy Issue
 python -m src.main --weekly-accuracy
@@ -189,12 +197,13 @@ Confidence = `min(|score| / 10, 1.0)`.
 ```
 dxy_gold_oracle/
 ├── .github/workflows/     # session + feedback + CI
-├── config/weights.json    # DXY basket weights
-├── data/                  # runtime state (telegram offset); gitignored contents
+├── config/weights.json           # DXY basket weights
+├── config/xau_price_alerts.json  # short-window + key-level alert thresholds
+├── data/                         # runtime state (telegram offset, alert cooldown)
 ├── src/
 │   ├── main.py            # CLI entry: python -m src.main
 │   ├── config.py
-│   ├── agents/            # oracle + specialists + opinion vote
+│   ├── agents/            # oracle + specialists + opinion + price alerts
 │   ├── llm/router.py
 │   └── utils/             # GitHub / Telegram / weekly accuracy
 ├── tests/                 # offline unit tests

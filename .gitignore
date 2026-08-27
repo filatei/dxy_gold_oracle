@@ -37,6 +37,9 @@ ENV/
 report_*.json
 data/*
 !data/.gitkeep
+# Cooldown / offset state committed by Actions (force-add also used in workflows)
+!data/telegram_offset.json
+!data/xau_price_alert_state.json
 
 # IDE
 .idea/

@@ -7,6 +7,8 @@ Run from the repository root:
     python -m src.main --test-telegram
     python -m src.main --collect-feedback
     python -m src.main --weekly-accuracy
+    python -m src.main --price-alerts
+    python -m src.main --price-alerts --dry-run
 """
 from __future__ import annotations
 
@@ -30,9 +32,18 @@ except ImportError:
 
 from src.agents.feedback_collector import FeedbackCollector
 from src.agents.oracle import GoldOracle
+from src.agents.price_level_monitor import run_price_alerts
 from src.utils.github_reporter import GitHubReporter
 from src.utils.telegram_reporter import TelegramReporter
 from src.utils.weekly_accuracy import publish_accuracy_report
+
+
+def _dry_run_enabled(flag: bool) -> bool:
+    return flag or os.getenv("ORACLE_DRY_RUN", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,6 +69,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Generate weekly accuracy GitHub issue",
     )
     parser.add_argument(
+        "--price-alerts",
+        action="store_true",
+        help="Check XAUUSD short-window moves at key levels; Telegram if fired",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Skip GitHub Issues and Telegram publishing",
@@ -80,17 +96,21 @@ def main(argv: list[str] | None = None) -> int:
         publish_accuracy_report()
         return 0
 
+    if args.price_alerts:
+        dry_run = _dry_run_enabled(args.dry_run)
+        print("XAUUSD price-level alerts")
+        print("=" * 50)
+        result = run_price_alerts(dry_run=dry_run)
+        print(json.dumps(result, indent=2, default=str))
+        return 1 if result.get("error") else 0
+
     if not args.session:
         parser.error(
             "--session is required unless using --collect-feedback, "
-            "--test-telegram, or --weekly-accuracy"
+            "--test-telegram, --weekly-accuracy, or --price-alerts"
         )
 
-    dry_run = args.dry_run or os.getenv("ORACLE_DRY_RUN", "").strip() in {
-        "1",
-        "true",
-        "yes",
-    }
+    dry_run = _dry_run_enabled(args.dry_run)
 
     print(f"Gold Oracle — {args.session.upper()} session")
     print("=" * 50)

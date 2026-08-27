@@ -1,0 +1,12 @@
+{
+  "_comment": "XAU/USD (GC=F) short-window + key-level Telegram alerts. Thresholds mirror DXY 'strong' (~0.2%/day) scaled for gold's higher volatility.",
+  "ticker": "GC=F",
+  "period": "5d",
+  "interval": "15m",
+  "move_window_bars": 4,
+  "move_pct_threshold": 0.5,
+  "level_step_usd": 50,
+  "level_proximity_usd": 3.0,
+  "cooldown_minutes": 120,
+  "levels_around_price": 12
+}

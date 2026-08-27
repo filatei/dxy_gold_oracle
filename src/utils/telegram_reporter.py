@@ -204,6 +204,78 @@ class TelegramReporter:
             lines.append(f"  {label}: <code>{_html_escape(str(display))}</code>")
         return "\n".join(lines) if lines else "  <i>No agent data</i>"
 
+    def send_text(self, text: str, *, disable_preview: bool = True) -> Dict[str, int]:
+        """Send arbitrary HTML text to all configured chats. Returns {chat_id: message_id}."""
+        if not self.enabled:
+            print("[Telegram] Not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
+            return {}
+
+        results: Dict[str, int] = {}
+        for chat_id in self.chat_ids:
+            try:
+                payload = {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": disable_preview,
+                }
+                resp = requests.post(
+                    f"{self.base_url}/sendMessage",
+                    json=payload,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if not data.get("ok"):
+                    print(f"[Telegram] API error for {chat_id}: {data}")
+                    continue
+                results[chat_id] = data["result"]["message_id"]
+                print(
+                    f"[Telegram] Message sent to chat {chat_id}, "
+                    f"msg_id={data['result']['message_id']}"
+                )
+            except Exception as e:
+                print(f"[Telegram] Failed to send to {chat_id}: {e}")
+        return results
+
+    def format_price_alert(self, alert: dict) -> str:
+        """HTML body for XAU key-level / short-window move alerts."""
+        direction = str(alert.get("direction") or "").lower()
+        arrow = "🟢 ▲" if direction == "up" else "🔴 ▼"
+        level = alert.get("level", "n/a")
+        price = alert.get("price", "n/a")
+        move = alert.get("window_move_pct", 0)
+        bars = alert.get("window_bars", "?")
+        interval = alert.get("interval") or alert.get("window_interval") or "?"
+        reason = _html_escape(str(alert.get("reason") or ""))
+        try:
+            move_s = f"{float(move):+.2f}%"
+        except (TypeError, ValueError):
+            move_s = str(move)
+        try:
+            level_s = f"{float(level):.0f}"
+        except (TypeError, ValueError):
+            level_s = str(level)
+        try:
+            price_s = f"{float(price):.2f}"
+        except (TypeError, ValueError):
+            price_s = str(price)
+
+        return f"""<b>XAUUSD KEY LEVEL ALERT</b>
+
+{arrow} <b>{_html_escape(direction.upper() or "MOVE")}</b> · level <code>{_html_escape(level_s)}</code>
+
+<b>Price:</b> <code>{_html_escape(price_s)}</code> (GC=F)
+<b>Move:</b> <code>{_html_escape(move_s)}</code> over {bars}×{_html_escape(str(interval))}
+
+<i>{reason}</i>
+
+⏱ <i>{_html_escape(str(alert.get("timestamp") or "")[:19])} UTC</i>
+🤖 <i>Automated price alert · not financial advice</i>"""
+
+    def send_price_alert(self, alert: dict) -> Dict[str, int]:
+        return self.send_text(self.format_price_alert(alert))
+
     def send_test_message(self) -> bool:
         if not self.enabled:
             return False
@@ -214,7 +286,9 @@ class TelegramReporter:
             "• 07:00 UTC (London)\n"
             "• 13:30 UTC (New York)\n"
             "• 22:00 UTC (Asia)\n\n"
-            "Each report leads with a multi-LLM <b>BUY / SELL / HOLD</b> "
+            "Plus intraday <b>XAUUSD key-level</b> alerts when gold "
+            "moves unusually near round levels.\n\n"
+            "Each session report leads with a multi-LLM <b>BUY / SELL / HOLD</b> "
             "opinion for GOLD and DXY."
         )
         ok_any = False

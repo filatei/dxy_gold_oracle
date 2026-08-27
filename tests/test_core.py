@@ -506,3 +506,128 @@ def test_consensus_note_single_model():
     )
     assert note.startswith("1/1 model:")
 
+
+def test_round_key_levels_and_detect_up_move():
+    from src.agents.price_level_monitor import (
+        AlertConfig,
+        detect_alerts,
+        filter_cooldown,
+        mark_alerts_sent,
+        round_key_levels,
+    )
+
+    levels = round_key_levels(2648.0, 50.0, 6)
+    assert 2650.0 in levels
+    assert 2600.0 in levels
+
+    cfg = AlertConfig(
+        ticker="GC=F",
+        period="5d",
+        interval="15m",
+        move_window_bars=4,
+        move_pct_threshold=0.5,
+        level_step_usd=50.0,
+        level_proximity_usd=3.0,
+        cooldown_minutes=120,
+        levels_around_price=12,
+    )
+    # Flat then sharp rise through 2650
+    closes = [2620.0, 2622.0, 2625.0, 2630.0, 2651.0]
+    alerts = detect_alerts(closes, cfg)
+    assert len(alerts) == 1
+    assert alerts[0].direction == "up"
+    assert alerts[0].level == 2650.0
+    assert alerts[0].window_move_pct > 0.5
+
+    state = {"last_alerts": {}}
+    kept = filter_cooldown(alerts, state, cooldown_minutes=120)
+    assert len(kept) == 1
+    state = mark_alerts_sent(state, kept)
+    assert "level:2650:up" in state["last_alerts"]
+    assert filter_cooldown(alerts, state, cooldown_minutes=120) == []
+
+
+def test_detect_alerts_requires_unusual_move():
+    from src.agents.price_level_monitor import AlertConfig, detect_alerts
+
+    cfg = AlertConfig(
+        ticker="GC=F",
+        period="5d",
+        interval="15m",
+        move_window_bars=4,
+        move_pct_threshold=0.5,
+        level_step_usd=50.0,
+        level_proximity_usd=3.0,
+        cooldown_minutes=120,
+        levels_around_price=12,
+    )
+    # Tiny drift near 2650 — no alert
+    closes = [2648.0, 2649.0, 2650.0, 2650.5, 2651.0]
+    assert detect_alerts(closes, cfg) == []
+
+
+def test_detect_alerts_down_through_level():
+    from src.agents.price_level_monitor import AlertConfig, detect_alerts
+
+    cfg = AlertConfig(
+        ticker="GC=F",
+        period="5d",
+        interval="15m",
+        move_window_bars=4,
+        move_pct_threshold=0.5,
+        level_step_usd=50.0,
+        level_proximity_usd=3.0,
+        cooldown_minutes=120,
+        levels_around_price=12,
+    )
+    closes = [2680.0, 2675.0, 2665.0, 2655.0, 2648.0]
+    alerts = detect_alerts(closes, cfg)
+    assert len(alerts) == 1
+    assert alerts[0].direction == "down"
+    assert alerts[0].level == 2650.0
+
+
+def test_load_alert_config_env_override(monkeypatch):
+    from src.agents.price_level_monitor import load_alert_config
+
+    monkeypatch.setenv("XAU_ALERT_MOVE_PCT", "0.75")
+    monkeypatch.setenv("XAU_ALERT_COOLDOWN_MINUTES", "90")
+    cfg = load_alert_config()
+    assert cfg.move_pct_threshold == 0.75
+    assert cfg.cooldown_minutes == 90
+    assert cfg.interval == "15m"
+
+
+def test_telegram_format_price_alert():
+    text = TelegramReporter().format_price_alert(
+        {
+            "direction": "up",
+            "level": 2650,
+            "price": 2651.25,
+            "window_move_pct": 0.62,
+            "window_bars": 4,
+            "interval": "15m",
+            "reason": "Gold risen 0.62% near 2650",
+            "timestamp": "2026-08-27T12:00:00",
+        }
+    )
+    assert "XAUUSD KEY LEVEL ALERT" in text
+    assert "2650" in text
+    assert "+0.62%" in text
+    assert "UP" in text
+
+
+def test_run_price_alerts_dry_run_mocked(monkeypatch):
+    from src.agents import price_level_monitor as plm
+
+    closes = [2620.0, 2622.0, 2625.0, 2630.0, 2651.0]
+    fake_df = pd.DataFrame({"Close": closes})
+
+    monkeypatch.setattr(plm, "fetch_gold_intraday", lambda cfg: fake_df)
+    monkeypatch.setattr(plm, "load_alert_state", lambda path=None: {"last_alerts": {}})
+    result = plm.run_price_alerts(dry_run=True)
+    assert not result.get("error")
+    assert len(result["alerts"]) == 1
+    assert result["sent"] == ["level:2650:up"]
+    assert result["dry_run"] is True
+
